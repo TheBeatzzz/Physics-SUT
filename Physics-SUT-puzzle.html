@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>LASER Lab Puzzle Master</title>
+    <style>
+        :root {
+            --img-url: url('img1.jpg');
+            --board-size: min(90vw, 400px);
+            --primary: #2ecc71;
+            --danger: #e74c3c;
+            --accent: #f1c40f;
+            --info: #3498db;
+        }
+
+        body {
+            background: #121212; color: white; font-family: 'Segoe UI', sans-serif;
+            margin: 0; display: flex; flex-direction: column; align-items: center;
+            overflow-x: hidden; touch-action: manipulation;
+        }
+
+        /* Header & Stats */
+        .stats-bar {
+            display: flex; justify-content: space-around; width: var(--board-size);
+            background: #1e1e1e; padding: 15px 0; margin-top: 10px;
+            border-radius: 12px 12px 0 0; font-weight: bold; border-bottom: 2px solid #333;
+        }
+
+        /* Layout Container */
+        .main-game-area { display: flex; flex-wrap: wrap; justify-content: center; gap: 20px; padding: 10px; }
+
+        /* Board */
+        #board-container { position: relative; width: var(--board-size); height: var(--board-size); border: 4px solid #333; border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+        .puzzle-board { display: grid; width: 100%; height: 100%; background: #000; }
+        .tile { background-image: var(--img-url); cursor: pointer; border: 1px solid rgba(0,0,0,0.2); transition: transform 0.1s, background-position 0.2s; }
+        .empty { background: #1a1a1a !important; cursor: default; }
+
+        /* Preview Panel */
+        .side-panel { display: flex; flex-direction: column; align-items: center; }
+        #thumb-ref { width: 100px; height: 100px; border: 3px solid #444; background-size: cover; background-position: center; border-radius: 8px; }
+
+        /* Gallery */
+        .gallery-container { display: flex; gap: 12px; overflow-x: auto; width: var(--board-size); padding: 20px 0; scroll-behavior: smooth; }
+        .thumb-wrapper { display: flex; flex-direction: column; align-items: center; flex-shrink: 0; }
+        .gallery-thumb { width: 70px; height: 70px; border: 2px solid #444; border-radius: 8px; cursor: pointer; background-size: cover; background-position: center; position: relative; }
+        .gallery-thumb.locked { background: #222; display: flex; align-items: center; justify-content: center; opacity: 0.5; cursor: not-allowed; }
+        .active { border-color: var(--primary); transform: scale(1.05); box-shadow: 0 0 10px var(--primary); }
+        .level-number { position: absolute; top: 2px; left: 2px; background: rgba(0,0,0,0.7); font-size: 10px; padding: 2px 5px; border-radius: 3px; }
+        .star-label { color: var(--accent); font-size: 11px; margin-top: 4px; height: 14px; }
+
+        /* Buttons & Animations */
+        .controls { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin: 15px; max-width: 500px; }
+        button { padding: 10px 15px; border: none; border-radius: 6px; background: #333; color: white; cursor: pointer; font-weight: bold; transition: 0.2s; }
+        button:active { transform: scale(0.95); }
+        .btn-green { background: var(--primary); }
+        .btn-hint { background: var(--info); }
+        .btn-purple { background: #9b59b6; }
+        
+        @keyframes hint-glow {
+            0%, 100% { box-shadow: none; border-color: rgba(0,0,0,0.2); }
+            50% { box-shadow: 0 0 20px var(--accent); border-color: var(--accent); }
+        }
+        .hint-active { animation: hint-glow 0.8s ease-in-out 2; z-index: 5; }
+
+        .confetti { position: fixed; width: 10px; height: 10px; top: -10px; z-index: 999; pointer-events: none; border-radius: 2px; }
+        @keyframes fall { to { transform: translateY(110vh) rotate(720deg); opacity: 0; } }
+    </style>
+</head>
+<body>
+
+    <div class="stats-bar">
+        <span id="timer">0:00</span>
+        <span id="moves">Moves: 0</span>
+        <span id="best-moves">Best: --</span>
+    </div>
+
+    <div class="main-game-area">
+        <div id="board-container">
+            <div id="board" class="puzzle-board"></div>
+        </div>
+        <div class="side-panel">
+            <div id="thumb-ref"></div>
+            <p style="font-size: 10px; color: #888; margin-top: 5px;">REFERENCE</p>
+        </div>
+    </div>
+
+    <div class="controls">
+        <button onclick="changeDifficulty(3)">3x3</button>
+        <button onclick="changeDifficulty(4)">4x4</button>
+        <button class="btn-green" onclick="shuffle()">Shuffle</button>
+        <button class="btn-hint" onclick="giveHint()">Hint (+5)</button>
+        <button class="btn-purple" onclick="shareScore()">Share</button>
+        <button onclick="resetProgress()" style="font-size: 10px; opacity: 0.6;">Reset</button>
+    </div>
+
+    <div id="image-gallery" class="gallery-container"></div>
+
+    <script>
+        const myImages = ['img1.jpg', 'img2.jpg', 'img3.jpg', 'img4.jpg', 'img5.jpg', 'img6.jpg', 'img7.jpg', 'img8.jpg', 'img9.jpg', 'img10.jpg'];
+        let gridSize = 3, tiles = [], moveCount = 0, seconds = 0, hintCount = 0, timerInterval;
+        let currentLevelIndex = 0;
+        let highestUnlocked = parseInt(localStorage.getItem('puzzleProgress')) || 0;
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+        function playSfx(type) {
+            const osc = audioCtx.createOscillator(), gain = audioCtx.createGain();
+            osc.connect(gain); gain.connect(audioCtx.destination);
+            if (type === 'slide') {
+                osc.frequency.setValueAtTime(150, audioCtx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+                gain.gain.setValueAtTime(0.05, audioCtx.currentTime);
+                osc.start(); osc.stop(audioCtx.currentTime + 0.1);
+            } else {
+                [261, 329, 392, 523].forEach((f, i) => {
+                    const o = audioCtx.createOscillator(); o.connect(audioCtx.destination);
+                    o.frequency.value = f; o.start(audioCtx.currentTime + i*0.1); o.stop(audioCtx.currentTime + i*0.1 + 0.3);
+                });
+            }
+        }
+
+        function initGame(size) {
+            gridSize = size; moveCount = 0; seconds = 0; hintCount = 0;
+            clearInterval(timerInterval);
+            tiles = [...Array(size*size-1).keys()].map(x => x+1).concat([null]);
+            document.getElementById('board').style.gridTemplateColumns = `repeat(${size}, 1fr)`;
+            document.getElementById('moves').innerText = "Moves: 0";
+            document.getElementById('timer').innerText = "0:00";
+            updateBestDisplay();
+            render();
+        }
+
+        function render() {
+            const board = document.getElementById('board'); board.innerHTML = '';
+            const boardPx = document.getElementById('board-container').clientWidth;
+            const tileSize = boardPx / gridSize;
+
+            tiles.forEach((tile, i) => {
+                const div = document.createElement('div');
+                div.className = `tile ${tile === null ? 'empty' : ''}`;
+                if (tile !== null) {
+                    const r = Math.floor((tile-1)/gridSize), c = (tile-1)%gridSize;
+                    div.style.backgroundPosition = `-${c * tileSize}px -${r * tileSize}px`;
+                    div.style.backgroundSize = `${boardPx}px ${boardPx}px`;
+                }
+                div.onclick = () => moveTile(i);
+                board.appendChild(div);
+            });
+        }
+
+        function moveTile(idx) {
+            const emptyIdx = tiles.indexOf(null), r = Math.floor(idx/gridSize), c = idx%gridSize;
+            const er = Math.floor(emptyIdx/gridSize), ec = emptyIdx%gridSize;
+            if (Math.abs(r-er) + Math.abs(c-ec) === 1) {
+                [tiles[idx], tiles[emptyIdx]] = [tiles[emptyIdx], tiles[idx]];
+                if (moveCount++ === 0) startTimer();
+                document.getElementById('moves').innerText = `Moves: ${moveCount}`;
+                playSfx('slide'); render(); checkWin();
+            }
+        }
+
+        function startTimer() {
+            timerInterval = setInterval(() => {
+                seconds++;
+                const m = Math.floor(seconds/60), s = seconds%60;
+                document.getElementById('timer').innerText = `${m}:${s.toString().padStart(2,'0')}`;
+            }, 1000);
+        }
+
+        function getManhattanDist(state) {
+            let d = 0; state.forEach((t, i) => {
+                if (t) {
+                    const cr = Math.floor(i/gridSize), cc = i%gridSize;
+                    const tr = Math.floor((t-1)/gridSize), tc = (t-1)%gridSize;
+                    d += Math.abs(cr-tr) + Math.abs(cc-tc);
+                }
+            }); return d;
+        }
+
+        function giveHint() {
+            if (moveCount === 0) startTimer();
+            hintCount++; moveCount += 5;
+            document.getElementById('moves').innerText = `Moves: ${moveCount}`;
+            const empty = tiles.indexOf(null), neighbors = [];
+            const r = Math.floor(empty/gridSize), c = empty%gridSize;
+            if (r > 0) neighbors.push(empty-gridSize); if (r < gridSize-1) neighbors.push(empty+gridSize);
+            if (c > 0) neighbors.push(empty-1); if (c < gridSize-1) neighbors.push(empty+1);
+            
+            let bestMove = -1, minDist = Infinity;
+            neighbors.forEach(n => {
+                const temp = [...tiles]; [temp[empty], temp[n]] = [temp[n], temp[empty]];
+                const d = getManhattanDist(temp);
+                if (d < minDist) { minDist = d; bestMove = n; }
+            });
+            const els = document.querySelectorAll('.tile');
+            els[bestMove].classList.add('hint-active');
+            setTimeout(() => els[bestMove].classList.remove('hint-active'), 1600);
+        }
+
+        function calculateStars(m, s) {
+            const base = s * s * 4;
+            if (m <= base) return '⭐⭐⭐';
+            if (m <= base * 2) return '⭐⭐';
+            return '⭐';
+        }
+
+        function checkWin() {
+            if (getManhattanDist(tiles) === 0 && moveCount > 0) {
+                clearInterval(timerInterval); playSfx('win');
+                const stars = calculateStars(moveCount, gridSize);
+                
+                const bestKey = `best_moves_lvl${currentLevelIndex}_gs${gridSize}`;
+                const currentBest = localStorage.getItem(bestKey);
+                const isNewRecord = !currentBest || moveCount < parseInt(currentBest);
+                if (isNewRecord) localStorage.setItem(bestKey, moveCount);
+
+                localStorage.setItem(`stars_${currentLevelIndex}_${gridSize}`, stars);
+
+                if (isNewRecord || (currentLevelIndex === highestUnlocked && highestUnlocked < 9)) launchConfetti();
+
+                if (currentLevelIndex === highestUnlocked && highestUnlocked < 9) {
+                    highestUnlocked++; localStorage.setItem('puzzleProgress', highestUnlocked);
+                    alert(`New Level Unlocked! 🏆\nRating: ${stars}`);
+                } else { alert(`Level Clear! Rating: ${stars}`); }
+                
+                setupGallery(); updateBestDisplay();
+            }
+        }
+
+        function updateBestDisplay() {
+            const best = localStorage.getItem(`best_moves_lvl${currentLevelIndex}_gs${gridSize}`);
+            document.getElementById('best-moves').innerText = best ? `Best: ${best}` : "Best: --";
+        }
+
+        function setupGallery() {
+            const gal = document.getElementById('image-gallery'); gal.innerHTML = '';
+            myImages.forEach((url, i) => {
+                const wrapper = document.createElement('div'); wrapper.className = 'thumb-wrapper';
+                const locked = i > highestUnlocked;
+                const thumb = document.createElement('div');
+                thumb.className = `gallery-thumb ${locked ? 'locked' : ''} ${i === currentLevelIndex ? 'active' : ''}`;
+                
+                const label = document.createElement('div'); label.className = 'level-number'; label.innerText = i + 1;
+                thumb.appendChild(label);
+
+                if (!locked) {
+                    thumb.style.backgroundImage = `url(${url})`;
+                    const stars = document.createElement('div'); stars.className = 'star-label';
+                    stars.innerText = localStorage.getItem(`stars_${i}_${gridSize}`) || '';
+                    wrapper.appendChild(stars);
+                } else { thumb.innerHTML = '🔒'; }
+                
+                thumb.onclick = () => {
+                    if (locked) return alert("Solve previous levels!");
+                    currentLevelIndex = i;
+                    document.documentElement.style.setProperty('--img-url', `url(${url})`);
+                    document.getElementById('thumb-ref').style.backgroundImage = `url(${url})`;
+                    setupGallery(); initGame(gridSize);
+                };
+                wrapper.appendChild(thumb); gal.appendChild(wrapper);
+            });
+        }
+
+        function launchConfetti() {
+            const colors = ['#2ecc71', '#e74c3c', '#f1c40f', '#3498db', '#9b59b6'];
+            for (let i = 0; i < 50; i++) {
+                const c = document.createElement('div'); c.className = 'confetti';
+                c.style.left = Math.random() * 100 + 'vw';
+                c.style.backgroundColor = colors[Math.floor(Math.random()*colors.length)];
+                const dur = Math.random() * 2 + 2;
+                c.style.animation = `fall ${dur}s linear forwards`;
+                document.body.appendChild(c); setTimeout(() => c.remove(), dur * 1000);
+            }
+        }
+
+        async function shareScore() {
+            const stars = calculateStars(moveCount, gridSize);
+            const msg = `🧩 Puzzle Master Pro\n🖼️ Level ${currentLevelIndex+1}\n⏱️ Moves: ${moveCount}\n⭐ Rating: ${stars}\n💡 Hints: ${hintCount}\n\nCan you beat me?`;
+            if (navigator.share) await navigator.share({text: msg});
+            else { navigator.clipboard.writeText(msg); alert("Copied to clipboard!"); }
+        }
+
+        function shuffle() {
+            let count = 0; const max = gridSize * gridSize * 5;
+            const itv = setInterval(() => {
+                const empty = tiles.indexOf(null), n = [];
+                const r = Math.floor(empty/gridSize), c = empty%gridSize;
+                if (r > 0) n.push(empty-gridSize); if (r < gridSize-1) n.push(empty+gridSize);
+                if (c > 0) n.push(empty-1); if (c < gridSize-1) n.push(empty+1);
+                const m = n[Math.floor(Math.random()*n.length)];
+                [tiles[empty], tiles[m]] = [tiles[m], tiles[empty]];
+                render(); if (++count > max) { clearInterval(itv); moveCount = 0; seconds = 0; }
+            }, 30);
+        }
+
+        function resetProgress() { if(confirm("Reset all levels?")) { localStorage.clear(); location.reload(); } }
+        function changeDifficulty(s) { initGame(s); setupGallery(); }
+
+        window.onload = () => {
+            const firstImg = myImages[0];
+            document.documentElement.style.setProperty('--img-url', `url(${firstImg})`);
+            document.getElementById('thumb-ref').style.backgroundImage = `url(${firstImg})`;
+            setupGallery(); initGame(3);
+        };
+    </script>
+</body>
+</html>
